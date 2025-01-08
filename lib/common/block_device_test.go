@@ -1,7 +1,7 @@
 // Copyright (c) HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
-package googlecompute
+package common
 
 import (
 	"testing"
@@ -323,7 +323,7 @@ func TestGenerateDiskAttachment(t *testing.T) {
 			config: BlockDevice{
 				VolumeSize: 375,
 				VolumeType: "scratch",
-				zone:       "us-central1-a",
+				Zone:       "us-central1-a",
 			},
 			expectval: &compute.AttachedDisk{
 				AutoDelete:        true,
@@ -345,7 +345,7 @@ func TestGenerateDiskAttachment(t *testing.T) {
 				VolumeType:     "pd-standard",
 				AttachmentMode: "READ_ONLY",
 				InterfaceType:  "NVME",
-				zone:           "us-central1-a",
+				Zone:           "us-central1-a",
 			},
 			expectval: &compute.AttachedDisk{
 				AutoDelete:        true,
@@ -364,7 +364,7 @@ func TestGenerateDiskAttachment(t *testing.T) {
 				AttachmentMode: "READ_ONLY",
 				InterfaceType:  "NVME",
 				DeviceName:     "packer-test",
-				zone:           "us-central1-a",
+				Zone:           "us-central1-a",
 			},
 			expectval: &compute.AttachedDisk{
 				AutoDelete:        true,
@@ -381,7 +381,7 @@ func TestGenerateDiskAttachment(t *testing.T) {
 			config: BlockDevice{
 				AttachmentMode: "READ_ONLY",
 				InterfaceType:  "NVME",
-				zone:           "us-central1-a",
+				Zone:           "us-central1-a",
 				SourceVolume:   "dummy_source",
 			},
 			expectval: &compute.AttachedDisk{
@@ -402,7 +402,7 @@ func TestGenerateDiskAttachment(t *testing.T) {
 				AttachmentMode: "READ_ONLY",
 				InterfaceType:  "NVME",
 				DeviceName:     "packer-test",
-				zone:           "us-central1-a",
+				Zone:           "us-central1-a",
 				KeepDevice:     true,
 			},
 			expectval: &compute.AttachedDisk{
@@ -446,7 +446,7 @@ func TestGenerateDiskAttachment(t *testing.T) {
 				t.Fatalf("failed to prepare config: %s", err)
 			}
 
-			att := tt.config.generateDiskAttachment()
+			att := tt.config.GenerateDiskAttachment()
 			diff := cmp.Diff(att, tt.expectval)
 			if diff != "" {
 				t.Errorf("found differences in generated disk attachment: %s", diff)
@@ -474,7 +474,7 @@ func TestGenerateComputeDisk(t *testing.T) {
 				VolumeType: "pd-ssd",
 				VolumeSize: 250,
 				DiskName:   "packer-test",
-				zone:       "us-central1-a",
+				Zone:       "us-central1-a",
 			},
 			expectval: &compute.Disk{
 				Description:       "created by Packer",
@@ -491,7 +491,7 @@ func TestGenerateComputeDisk(t *testing.T) {
 				VolumeSize: 250,
 				DiskName:   "packer-test",
 				IOPS:       110000,
-				zone:       "us-central1-a",
+				Zone:       "us-central1-a",
 			},
 			expectval: &compute.Disk{
 				Description:       "created by Packer",
@@ -510,7 +510,7 @@ func TestGenerateComputeDisk(t *testing.T) {
 				DiskName:     "packer-test",
 				IOPS:         110000,
 				ReplicaZones: []string{"us-central1-b", "us-central1-c"},
-				zone:         "us-central1-a",
+				Zone:         "us-central1-a",
 			},
 			expectval: &compute.Disk{
 				Description:       "created by Packer",
@@ -535,7 +535,7 @@ func TestGenerateComputeDisk(t *testing.T) {
 				t.Fatalf("failed to prepare config: %#v", errs)
 			}
 
-			att, err := tt.config.generateComputeDiskPayload()
+			att, err := tt.config.GenerateComputeDiskPayload()
 			if err != nil {
 				t.Fatalf("failed to generate compute disk payload: %s", err)
 			}
@@ -549,7 +549,7 @@ func TestGenerateComputeDisk(t *testing.T) {
 
 func TestGetRegionFromZone(t *testing.T) {
 	zone := "us-central1-a"
-	region, err := getRegionFromZone(zone)
+	region, err := GetRegionFromZone(zone)
 	if err != nil {
 		t.Fatalf("region extraction failed: %s", err)
 	}
@@ -558,13 +558,13 @@ func TestGetRegionFromZone(t *testing.T) {
 
 func TestIsRegion(t *testing.T) {
 	zone := "us-central1-a"
-	isRegion := isZoneARegion(zone)
+	isRegion := IsZoneARegion(zone)
 	if isRegion {
 		t.Errorf("expected zone %q not to be a region, but isZoneARegion returned %t", zone, isRegion)
 	}
 
 	region := "us-central1"
-	isRegion = isZoneARegion(region)
+	isRegion = IsZoneARegion(region)
 	if !isRegion {
 		t.Errorf("expected region %q to be a region, but isZoneARegion returned %t", region, isRegion)
 	}

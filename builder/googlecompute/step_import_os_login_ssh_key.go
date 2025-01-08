@@ -13,16 +13,16 @@ import (
 	"time"
 
 	metadata "cloud.google.com/go/compute/metadata"
+	"github.com/hashicorp/packer-plugin-googlecompute/lib/common"
 	"github.com/hashicorp/packer-plugin-sdk/multistep"
 	packersdk "github.com/hashicorp/packer-plugin-sdk/packer"
 	"google.golang.org/api/oauth2/v2"
-	"google.golang.org/api/option"
 )
 
 // StepImportOSLoginSSHKey imports a temporary SSH key pair into a GCE login profile.
 type StepImportOSLoginSSHKey struct {
 	Debug         bool
-	TokeninfoFunc func(context.Context, *Config) (*oauth2.Tokeninfo, error)
+	TokeninfoFunc func() (*oauth2.Tokeninfo, error)
 	accountEmail  string
 	GCEUserFunc   func() string
 }
@@ -31,7 +31,7 @@ type StepImportOSLoginSSHKey struct {
 // The key pairs are added to the ssh config
 func (s *StepImportOSLoginSSHKey) Run(ctx context.Context, state multistep.StateBag) multistep.StepAction {
 	config := state.Get("config").(*Config)
-	driver := state.Get("driver").(Driver)
+	driver := state.Get("driver").(common.Driver)
 	ui := state.Get("ui").(packersdk.Ui)
 
 	if !config.UseOSLogin {
@@ -59,32 +59,28 @@ func (s *StepImportOSLoginSSHKey) Run(ctx context.Context, state multistep.State
 	sha256sum := sha256.Sum256(config.Comm.SSHPublicKey)
 	state.Put("ssh_key_public_sha256", hex.EncodeToString(sha256sum[:]))
 
-	if config.account != nil && s.accountEmail == "" {
-		s.accountEmail = config.account.jwt.Email
+	// First we try to leverage the token info from the authenticated session
+	if s.TokeninfoFunc == nil {
+		s.TokeninfoFunc = driver.GetTokenInfo
 	}
 
+	if s.accountEmail == "" {
+		info, err := s.TokeninfoFunc()
+		if err != nil {
+			log.Printf("failed to derive account info from token: %s", err)
+		} else {
+			s.accountEmail = info.Email
+		}
+	}
+
+	// If this yielded nothing, we'll try to get it from the GCE context, if
+	// we're running in a GCE environment
 	if s.GCEUserFunc == nil {
 		s.GCEUserFunc = getGCEUser
 	}
 
 	if s.accountEmail == "" && config.ImpersonateServiceAccount == "" {
 		s.accountEmail = s.GCEUserFunc()
-	}
-
-	if s.TokeninfoFunc == nil && s.accountEmail == "" {
-		s.TokeninfoFunc = tokeninfo
-	}
-
-	if s.accountEmail == "" {
-		info, err := s.TokeninfoFunc(ctx, config)
-		if err != nil {
-			err := fmt.Errorf("Error obtaining token information needed for OSLogin: %s", err)
-			state.Put("error", err)
-			ui.Error(err.Error())
-			return multistep.ActionHalt
-		}
-
-		s.accountEmail = info.Email
 	}
 
 	if s.accountEmail == "" {
@@ -128,7 +124,7 @@ func (s *StepImportOSLoginSSHKey) Run(ctx context.Context, state multistep.State
 
 // Cleanup the SSH Key that we added to the POSIX account
 func (s *StepImportOSLoginSSHKey) Cleanup(state multistep.StateBag) {
-	driver := state.Get("driver").(Driver)
+	driver := state.Get("driver").(common.Driver)
 	ui := state.Get("ui").(packersdk.Ui)
 
 	fingerprint, ok := state.Get("ssh_key_public_sha256").(string)
@@ -144,23 +140,6 @@ func (s *StepImportOSLoginSSHKey) Cleanup(state multistep.StateBag) {
 	}
 
 	ui.Message("SSH public key for OSLogin has been deleted!")
-}
-
-func tokeninfo(ctx context.Context, config *Config) (*oauth2.Tokeninfo, error) {
-	var err error
-	var opts []option.ClientOption
-	opts, err = NewClientOptionGoogle(config.account, config.VaultGCPOauthEngine, config.ImpersonateServiceAccount, config.AccessToken, config.Scopes)
-	if err != nil {
-		return nil, err
-	}
-
-	svc, err := oauth2.NewService(ctx, opts...)
-	if err != nil {
-		err := fmt.Errorf("Error initializing oauth service needed for OSLogin: %s", err)
-		return nil, err
-	}
-
-	return svc.Tokeninfo().Context(ctx).Do()
 }
 
 // getGCEUser determines if we're running packer on a GCE, and if we are, gets the associated service account email for subsequent use with OSLogin.

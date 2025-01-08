@@ -1,8 +1,13 @@
-<!-- Code generated from the comments of the BlockDevice struct in builder/googlecompute/block_device.go; DO NOT EDIT MANUALLY -->
+<!-- Code generated from the comments of the BlockDevice struct in lib/common/block_device.go; DO NOT EDIT MANUALLY -->
 
 - `attachment_mode` (string) - How to attach the volume to the instance
   
   Can be either READ_ONLY or READ_WRITE (default).
+
+- `create_image` (bool) - If true, an image will be created for this disk, instead of the boot disk.
+  
+  This only applies to non-scratch disks, and can only be specified on one disk at a
+  time.
 
 - `device_name` (string) - The device name as exposed to the OS in the /dev/disk/by-id/google-* directory
   
@@ -17,6 +22,8 @@
   Possible values:
   * kmsKeyName -  The name of the encryption key that is stored in Google Cloud KMS.
   * RawKey: - A 256-bit customer-supplied encryption key, encodes in RFC 4648 base64.
+  
+  Refer to the [Customer Encryption Key](#customer-encryption-key) section for more information on the contents of this block.
 
 - `disk_name` (string) - Name of the disk to create.
   This only applies to non-scratch disks. If the disk is persistent, and
@@ -52,4 +59,9 @@
   
   This cannot be used with SourceVolume.
 
-<!-- End of code generated from the comments of the BlockDevice struct in builder/googlecompute/block_device.go; -->
+- `_` (string) - Zone is the zone in which to create the disk in.
+  
+  It is not exposed since the parent config already specifies it
+  and it will be set for the block device when preparing it.
+
+<!-- End of code generated from the comments of the BlockDevice struct in lib/common/block_device.go; -->

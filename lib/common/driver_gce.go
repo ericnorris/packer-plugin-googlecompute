@@ -1,7 +1,7 @@
 // Copyright (c) HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
-package googlecompute
+package common
 
 import (
 	"context"
@@ -12,14 +12,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 	"time"
 
 	compute "google.golang.org/api/compute/v1"
 	impersonate "google.golang.org/api/impersonate"
+	oauth2_svc "google.golang.org/api/oauth2/v2"
 	"google.golang.org/api/option"
 	oslogin "google.golang.org/api/oslogin/v1"
+	"google.golang.org/api/storage/v1"
 
 	"github.com/hashicorp/packer-plugin-googlecompute/version"
 	packersdk "github.com/hashicorp/packer-plugin-sdk/packer"
@@ -37,17 +40,19 @@ type driverGCE struct {
 	projectId      string
 	service        *compute.Service
 	osLoginService *oslogin.Service
+	oauth2Service  *oauth2_svc.Service
+	storageService *storage.Service
 	ui             packersdk.Ui
 }
 
 type GCEDriverConfig struct {
 	Ui                            packersdk.Ui
 	ProjectId                     string
-	Account                       *ServiceAccount
 	ImpersonateServiceAccountName string
 	Scopes                        []string
 	AccessToken                   string
 	VaultOauthEngineName          string
+	Credentials                   *google.Credentials
 }
 
 var DriverScopes = []string{
@@ -89,7 +94,7 @@ func (ots OauthTokenSource) Token() (*oauth2.Token, error) {
 
 }
 
-func NewClientOptionGoogle(account *ServiceAccount, vaultOauth string, impersonatesa string, accessToken string, scopes []string) ([]option.ClientOption, error) {
+func NewClientOptionGoogle(vaultOauth string, impersonatesa string, accessToken string, credentials *google.Credentials, scopes []string) ([]option.ClientOption, error) {
 	var err error
 
 	var opts []option.ClientOption
@@ -116,14 +121,12 @@ func NewClientOptionGoogle(account *ServiceAccount, vaultOauth string, impersona
 		token := &oauth2.Token{AccessToken: accessToken}
 		ts := oauth2.StaticTokenSource(token)
 		opts = append(opts, option.WithTokenSource(ts))
-	} else if account != nil && account.jwt != nil && len(account.jwt.PrivateKey) > 0 {
-		// Auth with AccountFile if provided
-		log.Printf("[INFO] Requesting Google token via account_file...")
-		log.Printf("[INFO]   -- Email: %s", account.jwt.Email)
+	} else if credentials != nil {
+		// Auth with Credentials if provided
+		log.Printf("[INFO] Requesting Google token via credentials...")
 		log.Printf("[INFO]   -- Scopes: %s", DriverScopes)
-		log.Printf("[INFO]   -- Private Key Length: %d", len(account.jwt.PrivateKey))
 
-		opts = append(opts, option.WithCredentialsJSON(account.jsonKey))
+		opts = append(opts, option.WithCredentials(credentials))
 	} else {
 		log.Printf("[INFO] Requesting Google token via GCE API Default Client Token Source...")
 		scopes := append(DriverScopes, "https://www.googleapis.com/auth/cloud-platform")
@@ -158,7 +161,7 @@ func NewClientOptionGoogle(account *ServiceAccount, vaultOauth string, impersona
 
 func NewDriverGCE(config GCEDriverConfig) (Driver, error) {
 
-	opts, err := NewClientOptionGoogle(config.Account, config.VaultOauthEngineName, config.ImpersonateServiceAccountName, config.AccessToken, config.Scopes)
+	opts, err := NewClientOptionGoogle(config.VaultOauthEngineName, config.ImpersonateServiceAccountName, config.AccessToken, config.Credentials, config.Scopes)
 	if err != nil {
 		return nil, err
 	}
@@ -175,38 +178,32 @@ func NewDriverGCE(config GCEDriverConfig) (Driver, error) {
 		return nil, err
 	}
 
+	log.Printf("[INFO] Instantiating Oauth2 client...")
+	oauth2Service, err := oauth2_svc.NewService(context.TODO(), opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("[INFO] Instantiating storage client...")
+	storageService, err := storage.NewService(context.TODO(), opts...)
+	if err != nil {
+		return nil, err
+	}
+
 	return &driverGCE{
 		projectId:      config.ProjectId,
 		service:        service,
 		osLoginService: osLoginService,
+		oauth2Service:  oauth2Service,
+		storageService: storageService,
 		ui:             config.Ui,
 	}, nil
 }
 
-func (d *driverGCE) CreateImage(project, name, description, family, zone, disk string, image_labels map[string]string, image_licenses []string, image_guest_os_features []string, image_encryption_key *compute.CustomerEncryptionKey, imageStorageLocations []string) (<-chan *Image, <-chan error) {
-
-	image_features := make([]*compute.GuestOsFeature, 0, len(image_guest_os_features))
-	for _, v := range image_guest_os_features {
-		image_features = append(image_features, &compute.GuestOsFeature{
-			Type: v,
-		})
-	}
-	gce_image := &compute.Image{
-		Description:        description,
-		Name:               name,
-		Family:             family,
-		Labels:             image_labels,
-		Licenses:           image_licenses,
-		GuestOsFeatures:    image_features,
-		ImageEncryptionKey: image_encryption_key,
-		SourceDisk:         fmt.Sprintf("%sprojects/%s/zones/%s/disks/%s", d.service.BasePath, d.projectId, zone, disk),
-		SourceType:         "RAW",
-		StorageLocations:   imageStorageLocations,
-	}
-
+func (d *driverGCE) CreateImage(project string, imageSpec *compute.Image) (<-chan *Image, <-chan error) {
 	imageCh := make(chan *Image, 1)
 	errCh := make(chan error, 1)
-	op, err := d.service.Images.Insert(project, gce_image).Do()
+	op, err := d.service.Images.Insert(project, imageSpec).Do()
 	if err != nil {
 		errCh <- err
 	} else {
@@ -218,7 +215,7 @@ func (d *driverGCE) CreateImage(project, name, description, family, zone, disk s
 				return
 			}
 			var image *Image
-			image, err = d.GetImageFromProject(project, name, false)
+			image, err = d.GetImageFromProject(project, imageSpec.Name, false)
 			if err != nil {
 				close(imageCh)
 				errCh <- err
@@ -272,7 +269,7 @@ func (d *driverGCE) createRegionalDisk(diskConfig BlockDevice) (<-chan *compute.
 	diskChan := make(chan *compute.Disk, 1)
 	errChan := make(chan error, 1)
 
-	computePayload, err := diskConfig.generateComputeDiskPayload()
+	computePayload, err := diskConfig.GenerateComputeDiskPayload()
 	if err != nil {
 		errChan <- err
 		close(diskChan)
@@ -280,7 +277,7 @@ func (d *driverGCE) createRegionalDisk(diskConfig BlockDevice) (<-chan *compute.
 		return diskChan, errChan
 	}
 
-	region, _ := getRegionFromZone(diskConfig.zone)
+	region, _ := GetRegionFromZone(diskConfig.Zone)
 	op, err := d.service.RegionDisks.Insert(d.projectId, region, computePayload).Do()
 	if err != nil {
 		errChan <- err
@@ -315,12 +312,12 @@ func (d *driverGCE) createZonalDisk(diskConfig BlockDevice) (<-chan *compute.Dis
 	diskChan := make(chan *compute.Disk, 1)
 	errChan := make(chan error, 1)
 
-	zone := diskConfig.zone
+	zone := diskConfig.Zone
 
 	var op *compute.Operation
 	var err error
 
-	computePayload, err := diskConfig.generateComputeDiskPayload()
+	computePayload, err := diskConfig.GenerateComputeDiskPayload()
 	if err != nil {
 		errChan <- err
 		close(diskChan)
@@ -359,7 +356,7 @@ func (d *driverGCE) createZonalDisk(diskConfig BlockDevice) (<-chan *compute.Dis
 }
 
 func (d *driverGCE) DeleteDisk(zoneOrRegion, name string) <-chan error {
-	if isZoneARegion(zoneOrRegion) {
+	if IsZoneARegion(zoneOrRegion) {
 		return d.deleteRegionalDisk(zoneOrRegion, name)
 	}
 
@@ -401,7 +398,7 @@ func (d *driverGCE) deleteRegionalDisk(region, name string) <-chan error {
 }
 
 func (d *driverGCE) GetDisk(zoneOrRegion, name string) (*compute.Disk, error) {
-	if isZoneARegion(zoneOrRegion) {
+	if IsZoneARegion(zoneOrRegion) {
 		return d.service.RegionDisks.Get(d.projectId, zoneOrRegion, name).Do()
 	}
 
@@ -476,6 +473,7 @@ func (d *driverGCE) GetImageFromProject(project, name string, fromFamily bool) (
 		return nil, fmt.Errorf("Image, %s, could not be found in project: %s", name, project)
 	} else {
 		return &Image{
+			Architecture:    image.Architecture,
 			GuestOsFeatures: image.GuestOsFeatures,
 			Licenses:        image.Licenses,
 			Name:            image.Name,
@@ -570,7 +568,7 @@ func (d *driverGCE) RunInstance(c *InstanceConfig) (<-chan error, error) {
 	}
 	// TODO(mitchellh): deprecation warnings
 
-	networkId, subnetworkId, err := getNetworking(c)
+	networkId, subnetworkId, err := GetNetworking(c)
 	if err != nil {
 		return nil, err
 	}
@@ -596,7 +594,7 @@ func (d *driverGCE) RunInstance(c *InstanceConfig) (<-chan error, error) {
 	}
 
 	// Build up the metadata
-	metadata := make([]*compute.MetadataItems, len(c.Metadata))
+	metadata := make([]*compute.MetadataItems, 0, len(c.Metadata))
 	for k, v := range c.Metadata {
 		vCopy := v
 		metadata = append(metadata, &compute.MetadataItems{
@@ -655,7 +653,7 @@ func (d *driverGCE) RunInstance(c *InstanceConfig) (<-chan error, error) {
 	}
 
 	for _, disk := range c.ExtraBlockDevices {
-		computeDisks = append(computeDisks, disk.generateDiskAttachment())
+		computeDisks = append(computeDisks, disk.GenerateDiskAttachment())
 	}
 
 	// Create the instance information
@@ -796,14 +794,14 @@ func (d *driverGCE) createWindowsPassword(errCh chan<- error, name, zone string,
 						errCh <- err
 						return
 					}
-					password, err := rsa.DecryptOAEP(hash, random, c.key, decodedPassword, nil)
+					password, err := rsa.DecryptOAEP(hash, random, c.Key, decodedPassword, nil)
 
 					if err != nil {
 						errCh <- err
 						return
 					}
 
-					c.password = string(password)
+					c.Password = string(password)
 					errCh <- nil
 					return
 				}
@@ -981,7 +979,7 @@ func (d *driverGCE) AddToInstanceMetadata(zone string, name string, metadata map
 	}
 
 	// Build up the metadata
-	metadataForInstance := make([]*compute.MetadataItems, len(metadata))
+	metadataForInstance := make([]*compute.MetadataItems, 0, len(metadata))
 	for k, v := range metadata {
 		vCopy := v
 		metadataForInstance = append(metadataForInstance, &compute.MetadataItems{
@@ -1019,4 +1017,22 @@ func (d *driverGCE) AddToInstanceMetadata(zone string, name string, metadata map
 	}
 
 	return nil
+}
+
+// GetTokenInfo gets the information about the token used for authentication
+func (d *driverGCE) GetTokenInfo() (*oauth2_svc.Tokeninfo, error) {
+	return d.oauth2Service.Tokeninfo().Do()
+}
+
+func (d *driverGCE) UploadToBucket(bucket, objectName string, data io.Reader) (string, error) {
+	storageObject, err := d.storageService.Objects.Insert(bucket, &storage.Object{Name: objectName}).Media(data).Do()
+	if err != nil {
+		return "", err
+	}
+
+	return storageObject.SelfLink, nil
+}
+
+func (d *driverGCE) DeleteFromBucket(bucket, objectName string) error {
+	return d.storageService.Objects.Delete(bucket, objectName).Do()
 }

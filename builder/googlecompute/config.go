@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //go:generate packer-sdc struct-markdown
-//go:generate packer-sdc mapstructure-to-hcl2 -type Config,CustomerEncryptionKey,NodeAffinity
+//go:generate packer-sdc mapstructure-to-hcl2 -type Config
 
 package googlecompute
 
@@ -12,15 +12,16 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
-	"github.com/hashicorp/packer-plugin-sdk/common"
+	"github.com/hashicorp/packer-plugin-googlecompute/lib/common"
+	sdk_common "github.com/hashicorp/packer-plugin-sdk/common"
 	"github.com/hashicorp/packer-plugin-sdk/communicator"
 	packersdk "github.com/hashicorp/packer-plugin-sdk/packer"
 	"github.com/hashicorp/packer-plugin-sdk/template/config"
 	"github.com/hashicorp/packer-plugin-sdk/template/interpolate"
 	"github.com/hashicorp/packer-plugin-sdk/uuid"
-	compute "google.golang.org/api/compute/v1"
 )
 
 // used for ImageName and ImageFamily
@@ -30,25 +31,11 @@ var validImageName = regexp.MustCompile(`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`)
 // both the publicly settable state as well as the privately generated
 // state of the config object.
 type Config struct {
-	common.PackerConfig `mapstructure:",squash"`
-	Comm                communicator.Config `mapstructure:",squash"`
+	sdk_common.PackerConfig `mapstructure:",squash"`
+	common.Authentication   `mapstructure:",squash"`
 
-	// A temporary [OAuth 2.0 access token](https://developers.google.com/identity/protocols/oauth2)
-	// obtained from the Google Authorization server, i.e. the `Authorization: Bearer` token used to
-	// authenticate HTTP requests to GCP APIs.
-	// This is an alternative to `account_file`, and ignores the `scopes` field.
-	// If both are specified, `access_token` will be used over the `account_file` field.
-	//
-	// These access tokens cannot be renewed by Packer and thus will only work until they expire.
-	// If you anticipate Packer needing access for longer than a token's lifetime (default `1 hour`),
-	// please use a service account key with `account_file` instead.
-	AccessToken string `mapstructure:"access_token" required:"false"`
-	// The JSON file containing your account credentials. Not required if you
-	// run Packer on a GCE instance with a service account. Instructions for
-	// creating the file or using service accounts are above.
-	AccountFile string `mapstructure:"account_file" required:"false"`
-	// This allows service account impersonation as per the [docs](https://cloud.google.com/iam/docs/impersonating-service-accounts).
-	ImpersonateServiceAccount string `mapstructure:"impersonate_service_account" required:"false"`
+	Comm communicator.Config `mapstructure:",squash"`
+
 	// The project ID that will be used to launch instances and store images.
 	ProjectId string `mapstructure:"project_id" required:"true"`
 	// Full or partial URL of the guest accelerator type. GPU accelerators can
@@ -89,7 +76,9 @@ type Config struct {
 	//     kmsKeyName = "projects/${var.project}/locations/${var.region}/keyRings/computeEngine/cryptoKeys/computeEngine/cryptoKeyVersions/4"
 	//   }
 	//  ```
-	DiskEncryptionKey *CustomerEncryptionKey `mapstructure:"disk_encryption_key" required:"false"`
+	//
+	// Refer to the [Customer Encryption Key](#customer-encryption-key) section for more information on the contents of this block.
+	DiskEncryptionKey *common.CustomerEncryptionKey `mapstructure:"disk_encryption_key" required:"false"`
 	// Create a instance with enabling nested virtualization.
 	EnableNestedVirtualization bool `mapstructure:"enable_nested_virtualization" required:"false"`
 	// Create a Shielded VM image with Secure Boot enabled. It helps ensure that
@@ -116,13 +105,21 @@ type Config struct {
 	// Scratch (ephemeral) SSDs are always created at launch, and deleted when the
 	// instance is torn-down.
 	//
+	// Note: local SSDs are not supported on all machine types, refer to the
+	// [docs](https://cloud.google.com/compute/docs/disks/local-ssd#choose_number_local_ssds)
+	// for more information on that.
+	//
 	// Refer to the [Extra Disk Attachments](#extra-disk-attachments) section for
 	// more information on this configuration type.
-	ExtraBlockDevices []BlockDevice `mapstructure:"disk_attachment" required:"false"`
+	ExtraBlockDevices []common.BlockDevice `mapstructure:"disk_attachment" required:"false"`
 	// Whether to use an IAP proxy.
 	IAPConfig `mapstructure:",squash"`
 	// Skip creating the image. Useful for setting to `true` during a build test stage. Defaults to `false`.
 	SkipCreateImage bool `mapstructure:"skip_create_image" required:"false"`
+	// The architecture of the resulting image.
+	//
+	// Defaults to unset: GCE will use the origin image architecture.
+	ImageArchitecture string `mapstructure:"image_architecture" required:"false"`
 	// The unique name of the resulting image. Defaults to
 	// `packer-{{timestamp}}`.
 	ImageName string `mapstructure:"image_name" required:"false"`
@@ -145,7 +142,9 @@ type Config struct {
 	//     kmsKeyName = "projects/${var.project}/locations/${var.region}/keyRings/computeEngine/cryptoKeys/computeEngine/cryptoKeyVersions/4"
 	//   }
 	//  ```
-	ImageEncryptionKey *CustomerEncryptionKey `mapstructure:"image_encryption_key" required:"false"`
+	//
+	// Refer to the [Customer Encryption Key](#customer-encryption-key) section for more information on the contents of this block.
+	ImageEncryptionKey *common.CustomerEncryptionKey `mapstructure:"image_encryption_key" required:"false"`
 	// The name of the image family to which the resulting image belongs. You
 	// can create disks by specifying an image family instead of a specific
 	// image name. The image family always returns its latest image that is not
@@ -228,7 +227,9 @@ type Config struct {
 	//   operator = "IN"
 	//   values = ["packer"]
 	// ```
-	NodeAffinities []NodeAffinity `mapstructure:"node_affinity" required:"false"`
+	//
+	// Refer to the [Node Affinity](#node-affinities) for more information on affinities.
+	NodeAffinities []common.NodeAffinity `mapstructure:"node_affinity" required:"false"`
 	// The time to wait for instance state changes. Defaults to "5m".
 	StateTimeout time.Duration `mapstructure:"state_timeout" required:"false"`
 	// The region in which to launch the instance. Defaults to the region
@@ -252,11 +253,11 @@ type Config struct {
 	// The source image to use to create the new image from. You can also
 	// specify source_image_family instead. If both source_image and
 	// source_image_family are specified, source_image takes precedence.
-	// Example: "debian-8-jessie-v20161027"
+	// Example: `"debian-8-jessie-v20161027"`
 	SourceImage string `mapstructure:"source_image" required:"true"`
 	// The source image family to use to create the new image from. The image
 	// family always returns its latest image that is not deprecated. Example:
-	// "debian-8".
+	// `"debian-8"`.
 	SourceImageFamily string `mapstructure:"source_image_family" required:"true"`
 	// A list of project IDs to search for the source image. Packer will search the first
 	// project ID in the list first, and fall back to the next in the list, until it finds the source image.
@@ -310,7 +311,7 @@ type Config struct {
 	//  ...
 	//  primary: true
 	//  uid: '2504818925'
-	//  username: /home/user_example_com
+	//  username: user_example_com
 	//sshPublicKeys:
 	//  000000000000000000000000000000000000000000000000000000000000000a:
 	//    fingerprint: 000000000000000000000000000000000000000000000000000000000000000a
@@ -335,18 +336,6 @@ type Config struct {
 	//    fingerprint: 000000000000000000000000000000000000000000000000000000000000000a
 	//```
 	UseOSLogin bool `mapstructure:"use_os_login" required:"false"`
-	// Can be set instead of account_file. If set, this builder will use
-	// HashiCorp Vault to generate an Oauth token for authenticating against
-	// Google Cloud. The value should be the path of the token generator
-	// within vault.
-	// For information on how to configure your Vault + GCP engine to produce
-	// Oauth tokens, see https://www.vaultproject.io/docs/auth/gcp
-	// You must have the environment variables VAULT_ADDR and VAULT_TOKEN set,
-	// along with any other relevant variables for accessing your vault
-	// instance. For more information, see the Vault docs:
-	// https://www.vaultproject.io/docs/commands/#environment-variables
-	// Example:`"vault_gcp_oauth_engine": "gcp/token/my-project-editor",`
-	VaultGCPOauthEngine string `mapstructure:"vault_gcp_oauth_engine"`
 	// The time to wait between the creation of the instance used to create the image,
 	// and the addition of SSH configuration, including SSH keys, to that instance.
 	// The delay is intended to protect packer from anything in the instance boot
@@ -357,12 +346,12 @@ type Config struct {
 	// Example value: `5m`.
 	WaitToAddSSHKeys time.Duration `mapstructure:"wait_to_add_ssh_keys"`
 	// The zone in which to launch the instance used to create the image.
-	// Example: "us-central1-a"
+	// Example: `"us-central1-a"`
 	Zone string `mapstructure:"zone" required:"true"`
 
-	account            *ServiceAccount
-	imageAlreadyExists bool
 	ctx                interpolate.Context
+	imageSourceDisk    string
+	imageAlreadyExists bool
 }
 
 func (c *Config) Prepare(raws ...interface{}) ([]string, error) {
@@ -381,7 +370,8 @@ func (c *Config) Prepare(raws ...interface{}) ([]string, error) {
 		return nil, err
 	}
 
-	var errs *packersdk.MultiError
+	var warnings []string
+	var errs error
 
 	for i, bd := range c.ExtraBlockDevices {
 		err := bd.Prepare()
@@ -389,7 +379,7 @@ func (c *Config) Prepare(raws ...interface{}) ([]string, error) {
 			errs = packersdk.MultiErrorAppend(errs, err...)
 			continue
 		}
-		bd.zone = c.Zone
+		bd.Zone = c.Zone
 		c.ExtraBlockDevices[i] = bd
 	}
 
@@ -460,14 +450,22 @@ func (c *Config) Prepare(raws ...interface{}) ([]string, error) {
 
 	// used for ImageName and ImageFamily
 	imageErrorText := "Invalid image %s %q: The first character must be a lowercase letter, and all following characters must be a dash, lowercase letter, or digit, except the last character, which cannot be a dash"
+	if !validImageName.MatchString(c.ImageName) {
+		errs = packersdk.MultiErrorAppend(errs, fmt.Errorf(imageErrorText, "name", c.ImageName))
+	}
 
 	if len(c.ImageName) > 63 {
 		errs = packersdk.MultiErrorAppend(errs,
 			errors.New("Invalid image name: Must not be longer than 63 characters"))
 	}
 
-	if !validImageName.MatchString(c.ImageName) {
-		errs = packersdk.MultiErrorAppend(errs, fmt.Errorf(imageErrorText, "name", c.ImageName))
+	// Ensure the image architecture is uppercase
+	c.ImageArchitecture = strings.ToUpper(c.ImageArchitecture)
+	switch c.ImageArchitecture {
+	case "X86_64", "ARM64", "":
+	default:
+		errs = packersdk.MultiErrorAppend(errs,
+			fmt.Errorf("Invalid image architecture %q: Must be either X86_64 or ARM64", c.ImageArchitecture))
 	}
 
 	if len(c.ImageFamily) > 63 {
@@ -492,6 +490,22 @@ func (c *Config) Prepare(raws ...interface{}) ([]string, error) {
 
 	if c.DiskName == "" {
 		c.DiskName = c.InstanceName
+	}
+
+	for _, bd := range c.ExtraBlockDevices {
+		if !bd.CreateImage {
+			continue
+		}
+
+		if c.imageSourceDisk != "" {
+			errs = packersdk.MultiErrorAppend(errs, errors.New("create_image cannot be enabled on multiple disks."))
+		}
+
+		c.imageSourceDisk = bd.DiskName
+	}
+
+	if c.imageSourceDisk == "" {
+		c.imageSourceDisk = c.DiskName
 	}
 
 	if c.MachineType == "" {
@@ -574,21 +588,12 @@ func (c *Config) Prepare(raws ...interface{}) ([]string, error) {
 		c.Region = region
 	}
 
-	// Authenticating via an account file
-	if c.AccountFile != "" {
-		if c.VaultGCPOauthEngine != "" && c.ImpersonateServiceAccount != "" {
-			errs = packersdk.MultiErrorAppend(errs, fmt.Errorf("You cannot "+
-				"specify impersonate_service_account, account_file and vault_gcp_oauth_engine at the same time"))
-		}
-		if c.AccessToken != "" {
-			errs = packersdk.MultiErrorAppend(errs, fmt.Errorf("You cannot "+
-				"specify access_token and account_file"))
-		}
-		cfg, err := ProcessAccountFile(c.AccountFile)
-		if err != nil {
-			errs = packersdk.MultiErrorAppend(errs, err)
-		}
-		c.account = cfg
+	warns, err := c.Authentication.Prepare()
+	if err != nil {
+		errs = packersdk.MultiErrorAppend(errs, err)
+	}
+	if len(warns) > 0 {
+		warnings = append(warnings, warns...)
 	}
 
 	if c.OmitExternalIP && c.Address != "" {
@@ -627,32 +632,7 @@ func (c *Config) Prepare(raws ...interface{}) ([]string, error) {
 		c.WindowsPasswordTimeout = 3 * time.Minute
 	}
 
-	// Check for any errors.
-	if errs != nil && len(errs.Errors) > 0 {
-		return nil, errs
-	}
-
-	return nil, nil
-}
-
-type CustomerEncryptionKey struct {
-	// KmsKeyName: The name of the encryption key that is stored in Google
-	// Cloud KMS.
-	KmsKeyName string `mapstructure:"kmsKeyName" json:"kmsKeyName,omitempty"`
-
-	// RawKey: Specifies a 256-bit customer-supplied encryption key, encoded
-	// in RFC 4648 base64 to either encrypt or decrypt this resource.
-	RawKey string `mapstructure:"rawKey" json:"rawKey,omitempty"`
-}
-
-func (k *CustomerEncryptionKey) ComputeType() *compute.CustomerEncryptionKey {
-	if k == nil {
-		return nil
-	}
-	return &compute.CustomerEncryptionKey{
-		KmsKeyName: k.KmsKeyName,
-		RawKey:     k.RawKey,
-	}
+	return warnings, errs
 }
 
 func SupportsIAPTunnel(c *communicator.Config) bool {
@@ -674,29 +654,5 @@ func ApplyIAPTunnel(c *communicator.Config, port int) error {
 		return nil
 	default:
 		return fmt.Errorf("IAP tunnel is not implemented for %s communicator", c.Type)
-	}
-}
-
-// Node affinity label configuration
-type NodeAffinity struct {
-	// Key: Corresponds to the label key of Node resource.
-	Key string `mapstructure:"key" json:"key"`
-
-	// Operator: Defines the operation of node selection. Valid operators are IN for affinity and
-	// NOT_IN for anti-affinity.
-	Operator string `mapstructure:"operator" json:"operator"`
-
-	// Values: Corresponds to the label values of Node resource.
-	Values []string `mapstructure:"values" json:"values"`
-}
-
-func (a *NodeAffinity) ComputeType() *compute.SchedulingNodeAffinity {
-	if a == nil {
-		return nil
-	}
-	return &compute.SchedulingNodeAffinity{
-		Key:      a.Key,
-		Operator: a.Operator,
-		Values:   a.Values,
 	}
 }

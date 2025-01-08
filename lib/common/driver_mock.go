@@ -1,12 +1,14 @@
 // Copyright (c) HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
-package googlecompute
+package common
 
 import (
 	"fmt"
+	"io"
 
 	compute "google.golang.org/api/compute/v1"
+	oauth2_svc "google.golang.org/api/oauth2/v2"
 	oslogin "google.golang.org/api/oslogin/v1"
 )
 
@@ -17,22 +19,12 @@ type DriverMock struct {
 	CreateDiskResultCh <-chan *compute.Disk
 	CreateDiskErrCh    <-chan error
 
-	CreateImageProjectId        string
-	CreateImageName             string
-	CreateImageDesc             string
-	CreateImageFamily           string
-	CreateImageEncryptionKey    *compute.CustomerEncryptionKey
-	CreateImageLabels           map[string]string
-	CreateImageLicenses         []string
-	CreateImageFeatures         []string
-	CreateImageStorageLocations []string
-	CreateImageZone             string
-	CreateImageDisk             string
-	CreateImageResultProjectId  string
-	CreateImageResultSelfLink   string
-	CreateImageResultSizeGb     int64
-	CreateImageErrCh            <-chan error
-	CreateImageResultCh         <-chan *Image
+	CreateImageProjectId      string
+	CreateImageSpec           *compute.Image
+	CreateImageReturnDiskSize int64
+	CreateImageReturnSelfLink string
+	CreateImageErrCh          <-chan error
+	CreateImageResultCh       <-chan *Image
 
 	DeleteProjectId  string
 	DeleteImageName  string
@@ -47,6 +39,10 @@ type DriverMock struct {
 	DeleteDiskName  string
 	DeleteDiskErrCh chan error
 	DeleteDiskErr   error
+
+	DeleteFromBucketBucket     string
+	DeleteFromBucketObjectName string
+	DeleteFromBucketErr        error
 
 	GetDiskName   string
 	GetDiskZone   string
@@ -70,6 +66,9 @@ type DriverMock struct {
 	GetInstanceMetadataKey    string
 	GetInstanceMetadataResult string
 	GetInstanceMetadataErr    error
+
+	GetTokenInfoResult *oauth2_svc.Tokeninfo
+	GetTokenInfoErr    error
 
 	GetNatIPZone   string
 	GetNatIPName   string
@@ -110,48 +109,40 @@ type DriverMock struct {
 	AddToInstanceMetadataKVPairs map[string]string
 	AddToInstanceMetadataErrCh   <-chan error
 	AddToInstanceMetadataErr     error
+
+	UploadToBucketBucket     string
+	UploadToBucketObjectName string
+	UploadToBucketData       io.Reader
+	UploadToBucketResult     string
+	UploadToBucketError      error
 }
 
-func (d *DriverMock) CreateImage(project, name, description, family, zone, disk string, image_labels map[string]string, image_licenses []string, image_features []string, image_encryption_key *compute.CustomerEncryptionKey, imageStorageLocations []string) (<-chan *Image, <-chan error) {
+func (d *DriverMock) CreateImage(project string, imageSpec *compute.Image) (<-chan *Image, <-chan error) {
 	d.CreateImageProjectId = project
-	d.CreateImageName = name
-	d.CreateImageDesc = description
-	d.CreateImageFamily = family
-	d.CreateImageLabels = image_labels
-	d.CreateImageLicenses = image_licenses
-	d.CreateImageFeatures = image_features
-	d.CreateImageStorageLocations = imageStorageLocations
-	d.CreateImageZone = zone
-	d.CreateImageDisk = disk
-	d.CreateImageEncryptionKey = image_encryption_key
-	if d.CreateImageResultProjectId == "" {
-		d.CreateImageResultProjectId = "test"
-	}
-	if d.CreateImageResultSelfLink == "" {
-		d.CreateImageResultSelfLink = fmt.Sprintf(
-			"http://content.googleapis.com/compute/v1/%s/global/licenses/test",
-			d.CreateImageResultProjectId)
-	}
-	if d.CreateImageResultSizeGb == 0 {
-		d.CreateImageResultSizeGb = 10
-	}
-	imageFeatures := make([]*compute.GuestOsFeature, 0, len(image_features))
-	for _, v := range image_features {
-		imageFeatures = append(imageFeatures, &compute.GuestOsFeature{
-			Type: v,
-		})
-	}
+	d.CreateImageSpec = imageSpec
 	resultCh := d.CreateImageResultCh
 	if resultCh == nil {
 		ch := make(chan *Image, 1)
+
+		selfLink := d.CreateImageReturnSelfLink
+		if selfLink == "" {
+			selfLink = fmt.Sprintf("http://content.googleapis.com/compute/v1/%s/global/licenses/test", d.CreateImageProjectId)
+		}
+
+		diskSizeGb := d.CreateImageReturnDiskSize
+		if diskSizeGb == 0 {
+			diskSizeGb = 25
+		}
+
 		ch <- &Image{
-			GuestOsFeatures: imageFeatures,
-			Labels:          d.CreateImageLabels,
-			Licenses:        d.CreateImageLicenses,
-			Name:            name,
-			ProjectId:       d.CreateImageResultProjectId,
-			SelfLink:        d.CreateImageResultSelfLink,
-			SizeGb:          d.CreateImageResultSizeGb,
+			Architecture:    imageSpec.Architecture,
+			GuestOsFeatures: imageSpec.GuestOsFeatures,
+			Labels:          imageSpec.Labels,
+			Licenses:        imageSpec.Licenses,
+			Name:            imageSpec.Name,
+			ProjectId:       d.CreateImageProjectId,
+			SelfLink:        selfLink,
+			SizeGb:          diskSizeGb,
 		}
 		close(ch)
 		resultCh = ch
@@ -165,6 +156,24 @@ func (d *DriverMock) CreateImage(project, name, description, family, zone, disk 
 	}
 
 	return resultCh, errCh
+}
+
+// CreateImageFromRaw is very similar to CreateImage, so we'll merge the two together in a later commit.
+//
+// Let's not spend time mocking it now, we'll make it mockable after merging the two functions.
+func (d *DriverMock) CreateImageFromRaw(
+	project string,
+	rawImageURL string,
+	imageName string,
+	imageDescription string,
+	imageFamily string,
+	imageLabels map[string]string,
+	imageGuestOsFeatures []string,
+	shieldedVMStateConfig *compute.InitialStateConfig,
+	imageStorageLocations []string,
+	imageArchitecture string,
+) (<-chan *Image, <-chan error) {
+	return nil, nil
 }
 
 func (d *DriverMock) DeleteImage(project, name string) <-chan error {
@@ -193,6 +202,13 @@ func (d *DriverMock) DeleteInstance(zone, name string) (<-chan error, error) {
 	}
 
 	return resultCh, d.DeleteInstanceErr
+}
+
+func (d *DriverMock) DeleteFromBucket(bucket, objectName string) error {
+	d.DeleteFromBucketBucket = bucket
+	d.DeleteFromBucketObjectName = objectName
+
+	return d.DeleteFromBucketErr
 }
 
 func (d *DriverMock) CreateDisk(diskConfig BlockDevice) (<-chan *compute.Disk, <-chan error) {
@@ -329,7 +345,7 @@ func (d *DriverMock) CreateOrResetWindowsPassword(instance, zone string, c *Wind
 	d.CreateOrResetWindowsPasswordZone = zone
 	d.CreateOrResetWindowsPasswordConfig = c
 
-	c.password = "MOCK_PASSWORD"
+	c.Password = "MOCK_PASSWORD"
 
 	resultCh := d.CreateOrResetWindowsPasswordErrCh
 	if resultCh == nil {
@@ -365,4 +381,20 @@ func (d *DriverMock) AddToInstanceMetadata(zone string, name string, metadata ma
 	}
 
 	return nil
+}
+
+func (d *DriverMock) GetTokenInfo() (*oauth2_svc.Tokeninfo, error) {
+	if d.GetTokenInfoResult == nil {
+		d.GetTokenInfoErr = fmt.Errorf("no token found")
+	}
+
+	return d.GetTokenInfoResult, d.GetTokenInfoErr
+}
+
+func (d *DriverMock) UploadToBucket(bucket, object string, data io.Reader) (string, error) {
+	d.UploadToBucketBucket = bucket
+	d.UploadToBucketObjectName = object
+	d.UploadToBucketData = data
+
+	return d.UploadToBucketResult, d.UploadToBucketError
 }

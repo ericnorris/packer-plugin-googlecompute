@@ -1,7 +1,7 @@
 // Copyright (c) HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
-package googlecompute
+package common
 
 import (
 	"strings"
@@ -10,6 +10,7 @@ import (
 )
 
 type Image struct {
+	Architecture    string
 	GuestOsFeatures []*compute.GuestOsFeature
 	Labels          map[string]string
 	Licenses        []string

@@ -5,7 +5,6 @@ package googlecompute
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"runtime"
 	"strings"
@@ -64,7 +63,6 @@ func TestConfigPrepare(t *testing.T) {
 			"foo",
 			false,
 		},
-
 		{
 			"zone",
 			nil,
@@ -628,8 +626,89 @@ func TestConfigExtraBlockDevice_zone_forwarded(t *testing.T) {
 
 	blockDevice := ebd[0]
 
-	if blockDevice.zone != config.Zone {
-		t.Errorf("Expected block device zone (%q) to match config's (%q)", blockDevice.zone, config.Zone)
+	if blockDevice.Zone != config.Zone {
+		t.Errorf("Expected block device zone (%q) to match config's (%q)", blockDevice.Zone, config.Zone)
+	}
+}
+
+func TestConfigExtraBlockDevice_create_image(t *testing.T) {
+	var config Config
+
+	c, _ := testConfig(t)
+
+	c["disk_attachment"] = []map[string]interface{}{
+		{
+			"volume_type":  "pd-standard",
+			"volume_size":  20,
+			"disk_name":    "second-disk",
+			"create_image": true,
+		},
+	}
+
+	_, err := config.Prepare(c)
+
+	if err != nil {
+		t.Fatalf("failed to prepare config: %#s", err)
+	}
+
+	if config.imageSourceDisk != "second-disk" {
+		t.Errorf("Expected imageSourceDisk (%q) to match second disk's disk_name (%q)", config.imageSourceDisk, "second-disk")
+	}
+}
+
+func TestConfigExtraBlockDevice_create_image_multiple(t *testing.T) {
+	var config Config
+
+	c, _ := testConfig(t)
+
+	c["disk_attachment"] = []map[string]interface{}{
+		{
+			"volume_type":  "pd-standard",
+			"volume_size":  20,
+			"disk_name":    "second-disk",
+			"create_image": true,
+		},
+		{
+			"volume_type":  "pd-standard",
+			"volume_size":  20,
+			"disk_name":    "third-disk",
+			"create_image": true,
+		},
+	}
+
+	_, err := config.Prepare(c)
+
+	if err == nil {
+		t.Fatalf("expected an error due to having multiple disks with create_image enabled, got nil")
+	}
+}
+
+func TestConfigPrepareImageArchitecture(t *testing.T) {
+	cases := []struct {
+		Architecture string
+		ExpectValid  bool
+	}{
+		{"X86_64", true},
+		{"ARM64", true},
+		{"arm64", true},
+		{"x86_64", true},
+		{"i386", false}, // Assuming 'i386' is not supported, adjust as needed
+	}
+
+	for _, tc := range cases {
+		raw, tempfile := testConfig(t)
+		defer os.Remove(tempfile)
+
+		raw["image_architecture"] = tc.Architecture
+
+		var c Config
+		_, errs := c.Prepare(raw)
+
+		if tc.ExpectValid && errs != nil {
+			t.Errorf("Expected architecture '%s' to be valid, but got error: %s", tc.Architecture, errs)
+		} else if !tc.ExpectValid && errs == nil {
+			t.Errorf("Expected architecture '%s' to be invalid, but got no error", tc.Architecture)
+		}
 	}
 }
 
@@ -639,11 +718,11 @@ func testConfig(t *testing.T) (config map[string]interface{}, tempAccountFile st
 	tempAccountFile = testAccountFile(t)
 
 	config = map[string]interface{}{
-		"account_file": tempAccountFile,
-		"project_id":   "hashicorp",
-		"source_image": "foo",
-		"ssh_username": "root",
-		"image_family": "bar",
+		"credentials_file": tempAccountFile,
+		"project_id":       "hashicorp",
+		"source_image":     "foo",
+		"ssh_username":     "root",
+		"image_family":     "bar",
 		"image_labels": map[string]string{
 			"label-1": "value-1",
 			"label-2": "value-2",
@@ -699,7 +778,7 @@ func testConfigOk(t *testing.T, warns []string, err error) {
 }
 
 func testAccountFile(t *testing.T) string {
-	tf, err := ioutil.TempFile("", "packer")
+	tf, err := os.CreateTemp("", "packer")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -733,7 +812,7 @@ func testIAPScript(t *testing.T, c *Config) {
 const testMetadataFileContent = `testMetadata`
 
 func testMetadataFile(t *testing.T) string {
-	tf, err := ioutil.TempFile("", "packer")
+	tf, err := os.CreateTemp("", "packer")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}

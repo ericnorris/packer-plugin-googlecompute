@@ -1,13 +1,15 @@
 // Copyright (c) HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
-package googlecompute
+package common
 
 import (
 	"crypto/rsa"
+	"io"
 	"time"
 
 	compute "google.golang.org/api/compute/v1"
+	oauth2_svc "google.golang.org/api/oauth2/v2"
 	oslogin "google.golang.org/api/oslogin/v1"
 )
 
@@ -20,7 +22,7 @@ type Driver interface {
 
 	// CreateImage creates an image from the given disk in Google Compute
 	// Engine.
-	CreateImage(project, name, description, family, zone, disk string, image_labels map[string]string, image_licenses []string, image_guest_os_features []string, image_encryption_key *compute.CustomerEncryptionKey, imageStorageLocation []string) (<-chan *Image, <-chan error)
+	CreateImage(project string, imageSpec *compute.Image) (<-chan *Image, <-chan error)
 
 	// DeleteImage deletes the image with the given name.
 	DeleteImage(project, name string) <-chan error
@@ -60,6 +62,9 @@ type Driver interface {
 	// GetSerialPortOutput gets the Serial Port contents for the instance.
 	GetSerialPortOutput(zone, name string) (string, error)
 
+	// GetTokenInfo gets the information about the token used for authentication
+	GetTokenInfo() (*oauth2_svc.Tokeninfo, error)
+
 	// ImageExists returns true if the specified image exists. If an error
 	// occurs calling the API, this method returns false.
 	ImageExists(project, name string) bool
@@ -81,48 +86,19 @@ type Driver interface {
 
 	// Add to the instance metadata for the existing instance
 	AddToInstanceMetadata(zone string, name string, metadata map[string]string) error
-}
 
-type InstanceConfig struct {
-	AcceleratorType              string
-	AcceleratorCount             int64
-	Address                      string
-	Description                  string
-	DisableDefaultServiceAccount bool
-	DiskName                     string
-	DiskSizeGb                   int64
-	DiskType                     string
-	DiskEncryptionKey            *CustomerEncryptionKey
-	EnableNestedVirtualization   bool
-	EnableSecureBoot             bool
-	EnableVtpm                   bool
-	EnableIntegrityMonitoring    bool
-	ExtraBlockDevices            []BlockDevice
-	Image                        *Image
-	Labels                       map[string]string
-	MachineType                  string
-	Metadata                     map[string]string
-	MinCpuPlatform               string
-	Name                         string
-	Network                      string
-	NetworkProjectId             string
-	OmitExternalIP               bool
-	OnHostMaintenance            string
-	Preemptible                  bool
-	NodeAffinities               []NodeAffinity
-	Region                       string
-	ServiceAccountEmail          string
-	Scopes                       []string
-	Subnetwork                   string
-	Tags                         []string
-	Zone                         string
+	// UploadToBucket uploads an artifact to a bucket on GCS.
+	UploadToBucket(bucket, objectName string, data io.Reader) (string, error)
+
+	// DeleteFromBucket deletes an object from a bucket on GCS.
+	DeleteFromBucket(bucket, objectName string) error
 }
 
 // WindowsPasswordConfig is the data structure that GCE needs to encrypt the created
 // windows password.
 type WindowsPasswordConfig struct {
-	key                    *rsa.PrivateKey
-	password               string
+	Key                    *rsa.PrivateKey
+	Password               string
 	UserName               string        `json:"userName"`
 	Modulus                string        `json:"modulus"`
 	Exponent               string        `json:"exponent"`

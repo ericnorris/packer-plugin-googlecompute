@@ -17,6 +17,12 @@ permissions to the GCS `paths`.
 ~> **Note**: By default the GCE image being exported will be deleted once the image has been exported.
 To prevent Packer from deleting the image set the `keep_input_artifact` configuration option to `true`. See [Post-Processor Input Artifacts](/packer/docs/templates/legacy_json_templates/post-processors#input-artifacts) for more details.
 
+## Authentication
+
+To authenticate with GCE, this builder supports everything the plugin does.
+To get more information on this, refer to the plugin's description page, under
+the [authentication](/packer/integrations/hashicorp/googlecompute#authentication) section.
+
 ## Configuration
 
 ### Required
@@ -32,13 +38,6 @@ To prevent Packer from deleting the image set the `keep_input_artifact` configur
 ### Optional
 
 <!-- Code generated from the comments of the Config struct in post-processor/googlecompute-export/post-processor.go; DO NOT EDIT MANUALLY -->
-
-- `access_token` (string) - A temporary OAuth 2.0 access token
-
-- `account_file` (string) - The JSON file containing your account credentials.
-  If specified, the account file will take precedence over any `googlecompute` builder authentication method.
-
-- `impersonate_service_account` (string) - This allows service account impersonation as per the [docs](https://cloud.google.com/iam/docs/impersonating-service-accounts).
 
 - `scopes` ([]string) - The service account scopes for launched exporter post-processor instance.
   Defaults to:
@@ -72,8 +71,6 @@ To prevent Packer from deleting the image set the `keep_input_artifact` configur
 
 - `zone` (string) - The zone in which to launch the export instance. Defaults
   to `googlecompute` builder zone. Example: `"us-central1-a"`
-
-- `vault_gcp_oauth_engine` (string) - Vault GCP Oauth Engine
 
 - `service_account_email` (string) - Service Account Email
 

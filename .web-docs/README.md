@@ -41,11 +41,61 @@ $ packer plugins install github.com/hashicorp/googlecompute
 
 ### Authentication
 
-Authenticating with Google Cloud services requires either a User Application Default Credentials, 
+Authenticating with Google Cloud services requires either a User Application Default Credentials,
 a JSON Service Account Key or an Access Token.  These are **not** required if you are
 running the `googlecompute` Packer builder on Google Cloud with a
 properly-configured [Google Service
 Account](https://cloud.google.com/compute/docs/authentication).
+
+The following options are available for the `googlecompute` builder, the `googlecompute-export`, and
+the `googlecompute-import`:
+
+<!-- Code generated from the comments of the Authentication struct in lib/common/auth.go; DO NOT EDIT MANUALLY -->
+
+- `access_token` (string) - A temporary [OAuth 2.0 access token](https://developers.google.com/identity/protocols/oauth2)
+  obtained from the Google Authorization server, i.e. the `Authorization: Bearer` token used to
+  authenticate HTTP requests to GCP APIs.
+  This is an alternative to `account_file`, and ignores the `scopes` field.
+  If both are specified, `access_token` will be used over the `account_file` field.
+  
+  These access tokens cannot be renewed by Packer and thus will only work until they expire.
+  If you anticipate Packer needing access for longer than a token's lifetime (default `1 hour`),
+  please use a service account key with `account_file` instead.
+
+- `account_file` (string) - The JSON file containing your account credentials. Not required if you
+  run Packer on a GCE instance with a service account. Instructions for
+  creating the file or using service accounts are above.
+
+- `credentials_file` (string) - The JSON file containing your account credentials.
+  
+  The file's contents may be anything supported by the Google Go client, i.e.:
+  
+  * Service account JSON
+  * OIDC-provided token for federation
+  * Gcloud user credentials file (refresh-token JSON)
+  * A Google Developers Console client_credentials.json
+
+- `credentials_json` (string) - The raw JSON payload for credentials.
+  
+  The accepted data formats are same as those described under
+  [credentials_file](#credentials_file).
+
+- `impersonate_service_account` (string) - This allows service account impersonation as per the [docs](https://cloud.google.com/iam/docs/impersonating-service-accounts).
+
+- `vault_gcp_oauth_engine` (string) - Can be set instead of account_file. If set, this builder will use
+  HashiCorp Vault to generate an Oauth token for authenticating against
+  Google Cloud. The value should be the path of the token generator
+  within vault.
+  For information on how to configure your Vault + GCP engine to produce
+  Oauth tokens, see https://www.vaultproject.io/docs/auth/gcp
+  You must have the environment variables VAULT_ADDR and VAULT_TOKEN set,
+  along with any other relevant variables for accessing your vault
+  instance. For more information, see the Vault docs:
+  https://www.vaultproject.io/docs/commands/#environment-variables
+  Example:`"vault_gcp_oauth_engine": "gcp/token/my-project-editor",`
+
+<!-- End of code generated from the comments of the Authentication struct in lib/common/auth.go; -->
+
 
 #### Running locally on your workstation.
 
@@ -303,7 +353,7 @@ source "googlecompute" "windows-ssh-ansible" {
   ssh_username            = var.packer_username
   ssh_private_key_file    = var.ssh_key_file_path
   ssh_timeout             = "1h"
-  
+
   metadata = {
     sysprep-specialize-script-cmd = "net user ${var.packer_username} \"${var.packer_user_password}\" /add /y & wmic UserAccount where Name=\"${var.packer_username}\" set PasswordExpires=False & net localgroup administrators ${var.packer_username} /add & powershell Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 & echo ${var.ssh_pub_key} > C:\\ProgramData\\ssh\\administrators_authorized_keys & icacls.exe \"C:\\ProgramData\\ssh\\administrators_authorized_keys\" /inheritance:r /grant \"Administrators:F\" /grant \"SYSTEM:F\" & powershell New-ItemProperty -Path \"HKLM:\\SOFTWARE\\OpenSSH\" -Name DefaultShell -Value \"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -PropertyType String -Force  & powershell Start-Service sshd & powershell Set-Service -Name sshd -StartupType 'Automatic' & powershell New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Set-ExecutionPolicy -ExecutionPolicy bypass -Force\""
   }
@@ -350,7 +400,7 @@ for details.
     {
       "type": "googlecompute",
       "project_id": "my project",
-      "source_image_family": "centos-7",
+      "source_image_family": "centos-stream-9",
       "ssh_username": "packer",
       "zone": "us-central1-a",
       "image_licenses": ["projects/vm-options/global/licenses/enable-vmx"]
@@ -364,7 +414,7 @@ for details.
 ```hcl
 source "googlecompute" "basic-example" {
   project_id = "my project"
-  source_image_family = "centos-7"
+  source_image_family = "centos-stream-9"
   ssh_username = "packer"
   zone = "us-central1-a"
   image_licenses = ["projects/vm-options/global/licenses/enable-vmx"]
@@ -394,7 +444,7 @@ Running on Google Cloud section.
       "type": "googlecompute",
       "project_id": "my project",
       "subnetwork": "default",
-      "source_image_family": "centos-7",
+      "source_image_family": "centos-stream-9",
       "network_project_id": "SHARED_VPC_PROJECT",
       "ssh_username": "packer",
       "zone": "us-central1-a",
@@ -409,7 +459,7 @@ Running on Google Cloud section.
 ```hcl
 source "googlecompute" "sharedvpc-example" {
   project_id = "my project"
-  source_image_family = "centos-7"
+  source_image_family = "centos-stream-9"
   subnetwork = "default"
   network_project_id = "SHARED_VPC_PROJECT"
   ssh_username = "packer"

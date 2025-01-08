@@ -6,9 +6,9 @@ package googlecompute
 import (
 	"context"
 	"errors"
-	"io/ioutil"
 	"os"
 
+	"github.com/hashicorp/packer-plugin-googlecompute/lib/common"
 	"github.com/hashicorp/packer-plugin-sdk/multistep"
 
 	"testing"
@@ -74,7 +74,7 @@ func TestStepCreateOrResetWindowsPassword_dontNeedPassword(t *testing.T) {
 }
 
 func TestStepCreateOrResetWindowsPassword_debug(t *testing.T) {
-	tf, err := ioutil.TempFile("", "packer")
+	tf, err := os.CreateTemp("", "packer")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -117,7 +117,7 @@ func TestStepCreateOrResetWindowsPassword_error(t *testing.T) {
 	step := new(StepCreateWindowsPassword)
 	defer step.Cleanup(state)
 
-	driver := state.Get("driver").(*DriverMock)
+	driver := state.Get("driver").(*common.DriverMock)
 	driver.CreateOrResetWindowsPasswordErr = errors.New("error")
 
 	// run the step
@@ -145,7 +145,7 @@ func TestStepCreateOrResetWindowsPassword_errorOnChannel(t *testing.T) {
 	step := new(StepCreateWindowsPassword)
 	defer step.Cleanup(state)
 
-	driver := state.Get("driver").(*DriverMock)
+	driver := state.Get("driver").(*common.DriverMock)
 
 	errCh := make(chan error, 1)
 	errCh <- errors.New("error")

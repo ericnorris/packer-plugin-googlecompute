@@ -13,6 +13,12 @@ and the [Google Compute Import
 Post-Processor](/packer/integrations/hashicorp/googlecompute/latest/components/post-processor/googlecompute-import) for more
 information.
 
+## Authentication
+
+To authenticate with GCE, this builder supports everything the plugin does.
+To get more information on this, refer to the plugin's description page, under
+the [authentication](/packer/integrations/hashicorp/googlecompute#authentication) section.
+
 ## Configuration Reference
 
 Configuration options are organized below into two categories: required and
@@ -32,14 +38,14 @@ builder.
 - `source_image` (string) - The source image to use to create the new image from. You can also
   specify source_image_family instead. If both source_image and
   source_image_family are specified, source_image takes precedence.
-  Example: "debian-8-jessie-v20161027"
+  Example: `"debian-8-jessie-v20161027"`
 
 - `source_image_family` (string) - The source image family to use to create the new image from. The image
   family always returns its latest image that is not deprecated. Example:
-  "debian-8".
+  `"debian-8"`.
 
 - `zone` (string) - The zone in which to launch the instance used to create the image.
-  Example: "us-central1-a"
+  Example: `"us-central1-a"`
 
 <!-- End of code generated from the comments of the Config struct in builder/googlecompute/config.go; -->
 
@@ -47,22 +53,6 @@ builder.
 ### Optional:
 
 <!-- Code generated from the comments of the Config struct in builder/googlecompute/config.go; DO NOT EDIT MANUALLY -->
-
-- `access_token` (string) - A temporary [OAuth 2.0 access token](https://developers.google.com/identity/protocols/oauth2)
-  obtained from the Google Authorization server, i.e. the `Authorization: Bearer` token used to
-  authenticate HTTP requests to GCP APIs.
-  This is an alternative to `account_file`, and ignores the `scopes` field.
-  If both are specified, `access_token` will be used over the `account_file` field.
-  
-  These access tokens cannot be renewed by Packer and thus will only work until they expire.
-  If you anticipate Packer needing access for longer than a token's lifetime (default `1 hour`),
-  please use a service account key with `account_file` instead.
-
-- `account_file` (string) - The JSON file containing your account credentials. Not required if you
-  run Packer on a GCE instance with a service account. Instructions for
-  creating the file or using service accounts are above.
-
-- `impersonate_service_account` (string) - This allows service account impersonation as per the [docs](https://cloud.google.com/iam/docs/impersonating-service-accounts).
 
 - `accelerator_type` (string) - Full or partial URL of the guest accelerator type. GPU accelerators can
   only be used with `"on_host_maintenance": "TERMINATE"` option set.
@@ -85,7 +75,7 @@ builder.
 - `disk_type` (string) - Type of disk used to back your instance, like pd-ssd or pd-standard.
   Defaults to pd-standard.
 
-- `disk_encryption_key` (\*CustomerEncryptionKey) - Disk encryption key to apply to the created boot disk. Possible values:
+- `disk_encryption_key` (\*common.CustomerEncryptionKey) - Disk encryption key to apply to the created boot disk. Possible values:
   * kmsKeyName -  The name of the encryption key that is stored in Google Cloud KMS.
   * RawKey: - A 256-bit customer-supplied encryption key, encodes in RFC 4648 base64.
   
@@ -102,6 +92,8 @@ builder.
       kmsKeyName = "projects/${var.project}/locations/${var.region}/keyRings/computeEngine/cryptoKeys/computeEngine/cryptoKeyVersions/4"
     }
    ```
+  
+  Refer to the [Customer Encryption Key](#customer-encryption-key) section for more information on the contents of this block.
 
 - `enable_nested_virtualization` (bool) - Create a instance with enabling nested virtualization.
 
@@ -120,7 +112,7 @@ builder.
   state of your VM instances. Note: integrity monitoring relies on having
   vTPM enabled. [Details](https://cloud.google.com/security/shielded-cloud/shielded-vm)
 
-- `disk_attachment` ([]BlockDevice) - Extra disks to attach to the instance that will build the final image.
+- `disk_attachment` ([]common.BlockDevice) - Extra disks to attach to the instance that will build the final image.
   
   You may reference an existing external persistent disk, or you can configure
   a set of disks to be created before the instance is created, and will
@@ -129,17 +121,25 @@ builder.
   Scratch (ephemeral) SSDs are always created at launch, and deleted when the
   instance is torn-down.
   
+  Note: local SSDs are not supported on all machine types, refer to the
+  [docs](https://cloud.google.com/compute/docs/disks/local-ssd#choose_number_local_ssds)
+  for more information on that.
+  
   Refer to the [Extra Disk Attachments](#extra-disk-attachments) section for
   more information on this configuration type.
 
 - `skip_create_image` (bool) - Skip creating the image. Useful for setting to `true` during a build test stage. Defaults to `false`.
+
+- `image_architecture` (string) - The architecture of the resulting image.
+  
+  Defaults to unset: GCE will use the origin image architecture.
 
 - `image_name` (string) - The unique name of the resulting image. Defaults to
   `packer-{{timestamp}}`.
 
 - `image_description` (string) - The description of the resulting image.
 
-- `image_encryption_key` (\*CustomerEncryptionKey) - Image encryption key to apply to the created image. Possible values:
+- `image_encryption_key` (\*common.CustomerEncryptionKey) - Image encryption key to apply to the created image. Possible values:
   * kmsKeyName -  The name of the encryption key that is stored in Google Cloud KMS.
   * RawKey: - A 256-bit customer-supplied encryption key, encodes in RFC 4648 base64.
   
@@ -156,6 +156,8 @@ builder.
       kmsKeyName = "projects/${var.project}/locations/${var.region}/keyRings/computeEngine/cryptoKeys/computeEngine/cryptoKeyVersions/4"
     }
    ```
+  
+  Refer to the [Customer Encryption Key](#customer-encryption-key) section for more information on the contents of this block.
 
 - `image_family` (string) - The name of the image family to which the resulting image belongs. You
   can create disks by specifying an image family instead of a specific
@@ -229,7 +231,7 @@ builder.
 
 - `preemptible` (bool) - If true, launch a preemptible instance.
 
-- `node_affinity` ([]NodeAffinity) - Sets a node affinity label for the launched instance (eg. for sole tenancy).
+- `node_affinity` ([]common.NodeAffinity) - Sets a node affinity label for the launched instance (eg. for sole tenancy).
   Please see [Provisioning VMs on
   sole-tenant nodes](https://cloud.google.com/compute/docs/nodes/provisioning-sole-tenant-vms)
   for more information.
@@ -239,6 +241,8 @@ builder.
     operator = "IN"
     values = ["packer"]
   ```
+  
+  Refer to the [Node Affinity](#node-affinities) for more information on affinities.
 
 - `state_timeout` (duration string | ex: "1h5m2s") - The time to wait for instance state changes. Defaults to "5m".
 
@@ -312,7 +316,7 @@ builder.
    ...
    primary: true
    uid: '2504818925'
-   username: /home/user_example_com
+   username: user_example_com
   sshPublicKeys:
    000000000000000000000000000000000000000000000000000000000000000a:
      fingerprint: 000000000000000000000000000000000000000000000000000000000000000a
@@ -336,18 +340,6 @@ builder.
    000000000000000000000000000000000000000000000000000000000000000a:
      fingerprint: 000000000000000000000000000000000000000000000000000000000000000a
   ```
-
-- `vault_gcp_oauth_engine` (string) - Can be set instead of account_file. If set, this builder will use
-  HashiCorp Vault to generate an Oauth token for authenticating against
-  Google Cloud. The value should be the path of the token generator
-  within vault.
-  For information on how to configure your Vault + GCP engine to produce
-  Oauth tokens, see https://www.vaultproject.io/docs/auth/gcp
-  You must have the environment variables VAULT_ADDR and VAULT_TOKEN set,
-  along with any other relevant variables for accessing your vault
-  instance. For more information, see the Vault docs:
-  https://www.vaultproject.io/docs/commands/#environment-variables
-  Example:`"vault_gcp_oauth_engine": "gcp/token/my-project-editor",`
 
 - `wait_to_add_ssh_keys` (duration string | ex: "1h5m2s") - The time to wait between the creation of the instance used to create the image,
   and the addition of SSH configuration, including SSH keys, to that instance.
@@ -536,7 +528,7 @@ The GCS location must be writeable by the service account of the instance that P
   **NOTE**: Guests using Windows with Win32-OpenSSH v9.1.0.0p1-Beta, scp
   (the default protocol for copying data) returns a a non-zero error code since the MOTW
   cannot be set, which cause any file transfer to fail. As a workaround you can override the transfer protocol
-  with SFTP instead `ssh_file_transfer_protocol = "sftp"`.
+  with SFTP instead `ssh_file_transfer_method = "sftp"`.
 
 - `ssh_proxy_host` (string) - A SOCKS proxy host to use for SSH connection
 
@@ -614,11 +606,11 @@ The machine type must have a scratch disk, which means you can't use an
 
 ## Extra disk attachments
 
-<!-- Code generated from the comments of the BlockDevice struct in builder/googlecompute/block_device.go; DO NOT EDIT MANUALLY -->
+<!-- Code generated from the comments of the BlockDevice struct in lib/common/block_device.go; DO NOT EDIT MANUALLY -->
 
 BlockDevice is a block device attachement/creation to an instance when building an image.
 
-<!-- End of code generated from the comments of the BlockDevice struct in builder/googlecompute/block_device.go; -->
+<!-- End of code generated from the comments of the BlockDevice struct in lib/common/block_device.go; -->
 
 
 These can be defined using the [disk_attachment](#disk_attachment) block in the configuration.
@@ -647,7 +639,7 @@ source "googlecompute" "example" {
 
 ### Required:
 
-<!-- Code generated from the comments of the BlockDevice struct in builder/googlecompute/block_device.go; DO NOT EDIT MANUALLY -->
+<!-- Code generated from the comments of the BlockDevice struct in lib/common/block_device.go; DO NOT EDIT MANUALLY -->
 
 - `volume_size` (int) - Size of the volume to request, in gigabytes.
   
@@ -661,19 +653,29 @@ source "googlecompute" "example" {
   * pd_balanced: persistent, SSD-backed disk
   * pd_ssd: persistent, SSD-backed disk, with extra performance guarantees
   * pd_extreme: persistent, fastest SSD-backed disk, with custom IOPS
+  * hyperdisk-balanced: persistent hyperdisk volume, bootable
+  * hyperdisk-extreme: persistent hyperdisk volume, optimised for performance
+  * hyperdisk-ml: persistent, shareable, hyperdisk volume, highest throughput
+  * hyperdisk-throughput: persistent hyperdisk volume with flexible throughput
   
   For details on the different types, refer to: https://cloud.google.com/compute/docs/disks#disk-types
+  For more information on hyperdisk volumes, refer to: https://cloud.google.com/compute/docs/disks/hyperdisks#throughput
 
-<!-- End of code generated from the comments of the BlockDevice struct in builder/googlecompute/block_device.go; -->
+<!-- End of code generated from the comments of the BlockDevice struct in lib/common/block_device.go; -->
 
 
 ### Optional:
 
-<!-- Code generated from the comments of the BlockDevice struct in builder/googlecompute/block_device.go; DO NOT EDIT MANUALLY -->
+<!-- Code generated from the comments of the BlockDevice struct in lib/common/block_device.go; DO NOT EDIT MANUALLY -->
 
 - `attachment_mode` (string) - How to attach the volume to the instance
   
   Can be either READ_ONLY or READ_WRITE (default).
+
+- `create_image` (bool) - If true, an image will be created for this disk, instead of the boot disk.
+  
+  This only applies to non-scratch disks, and can only be specified on one disk at a
+  time.
 
 - `device_name` (string) - The device name as exposed to the OS in the /dev/disk/by-id/google-* directory
   
@@ -688,6 +690,8 @@ source "googlecompute" "example" {
   Possible values:
   * kmsKeyName -  The name of the encryption key that is stored in Google Cloud KMS.
   * RawKey: - A 256-bit customer-supplied encryption key, encodes in RFC 4648 base64.
+  
+  Refer to the [Customer Encryption Key](#customer-encryption-key) section for more information on the contents of this block.
 
 - `disk_name` (string) - Name of the disk to create.
   This only applies to non-scratch disks. If the disk is persistent, and
@@ -723,4 +727,45 @@ source "googlecompute" "example" {
   
   This cannot be used with SourceVolume.
 
-<!-- End of code generated from the comments of the BlockDevice struct in builder/googlecompute/block_device.go; -->
+- `_` (string) - Zone is the zone in which to create the disk in.
+  
+  It is not exposed since the parent config already specifies it
+  and it will be set for the block device when preparing it.
+
+<!-- End of code generated from the comments of the BlockDevice struct in lib/common/block_device.go; -->
+
+
+## Customer Encryption Key
+
+Specifying a custom key allows you to use your own encryption keys to encrypt the data
+of the image you are creating.
+
+Note: you will need to reuse the same key later on when reusing the image.
+
+<!-- Code generated from the comments of the CustomerEncryptionKey struct in lib/common/client_keys.go; DO NOT EDIT MANUALLY -->
+
+- `kmsKeyName` (string) - KmsKeyName: The name of the encryption key that is stored in Google
+  Cloud KMS.
+
+- `rawKey` (string) - RawKey: Specifies a 256-bit customer-supplied encryption key, encoded
+  in RFC 4648 base64 to either encrypt or decrypt this resource.
+
+<!-- End of code generated from the comments of the CustomerEncryptionKey struct in lib/common/client_keys.go; -->
+
+
+## Node Affinities
+
+Node affinity configuration allows you to restrict the nodes on which to run the
+instance that Packer will build the image from.
+This requires configuring [sole-tenant node groups](https://cloud.google.com/compute/docs/nodes/provisioning-sole-tenant-vms) first.
+
+<!-- Code generated from the comments of the NodeAffinity struct in lib/common/affinities.go; DO NOT EDIT MANUALLY -->
+
+- `key` (string) - Key: Corresponds to the label key of Node resource.
+
+- `operator` (string) - Operator: Defines the operation of node selection. Valid operators are IN for affinity and
+  NOT_IN for anti-affinity.
+
+- `values` ([]string) - Values: Corresponds to the label values of Node resource.
+
+<!-- End of code generated from the comments of the NodeAffinity struct in lib/common/affinities.go; -->

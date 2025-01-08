@@ -4,7 +4,7 @@
 //go:generate packer-sdc struct-markdown
 //go:generate packer-sdc mapstructure-to-hcl2 -type BlockDevice
 
-package googlecompute
+package common
 
 import (
 	"fmt"
@@ -18,11 +18,15 @@ import (
 type BlockDeviceType string
 
 const (
-	LocalScratch  BlockDeviceType = "scratch"
-	ZonalStandard                 = "pd-standard"
-	ZonalBalanced                 = "pd-balanced"
-	ZonalSSD                      = "pd-ssd"
-	ZonalExtreme                  = "pd-extreme"
+	LocalScratch        BlockDeviceType = "scratch"
+	ZonalStandard                       = "pd-standard"
+	ZonalBalanced                       = "pd-balanced"
+	ZonalSSD                            = "pd-ssd"
+	ZonalExtreme                        = "pd-extreme"
+	HyperDiskBalanced                   = "hyperdisk-balanced"
+	HyperDiskExtreme                    = "hyperdisk-extreme"
+	HyperDiskML                         = "hyperdisk-ml"
+	HyperDiskThroughput                 = "hyperdisk-throughput"
 )
 
 var diskNameRegex = regexp.MustCompile("^[a-z]([-a-z0-9]*[a-z0-9])?$")
@@ -33,6 +37,11 @@ type BlockDevice struct {
 	//
 	// Can be either READ_ONLY or READ_WRITE (default).
 	AttachmentMode string `mapstructure:"attachment_mode"`
+	// If true, an image will be created for this disk, instead of the boot disk.
+	//
+	// This only applies to non-scratch disks, and can only be specified on one disk at a
+	// time.
+	CreateImage bool `mapstructure:"create_image"`
 	// The device name as exposed to the OS in the /dev/disk/by-id/google-* directory
 	//
 	// If unspecified, the disk will have a default name in the form
@@ -46,6 +55,8 @@ type BlockDevice struct {
 	// Possible values:
 	// * kmsKeyName -  The name of the encryption key that is stored in Google Cloud KMS.
 	// * RawKey: - A 256-bit customer-supplied encryption key, encodes in RFC 4648 base64.
+	//
+	// Refer to the [Customer Encryption Key](#customer-encryption-key) section for more information on the contents of this block.
 	DiskEncryptionKey CustomerEncryptionKey `mapstructure:"disk_encryption_key"`
 	// Name of the disk to create.
 	// This only applies to non-scratch disks. If the disk is persistent, and
@@ -89,27 +100,36 @@ type BlockDevice struct {
 	// * pd_balanced: persistent, SSD-backed disk
 	// * pd_ssd: persistent, SSD-backed disk, with extra performance guarantees
 	// * pd_extreme: persistent, fastest SSD-backed disk, with custom IOPS
+	// * hyperdisk-balanced: persistent hyperdisk volume, bootable
+	// * hyperdisk-extreme: persistent hyperdisk volume, optimised for performance
+	// * hyperdisk-ml: persistent, shareable, hyperdisk volume, highest throughput
+	// * hyperdisk-throughput: persistent hyperdisk volume with flexible throughput
 	//
 	// For details on the different types, refer to: https://cloud.google.com/compute/docs/disks#disk-types
+	// For more information on hyperdisk volumes, refer to: https://cloud.google.com/compute/docs/disks/hyperdisks#throughput
 	VolumeType BlockDeviceType `mapstructure:"volume_type" required:"true"`
 	// The URI of the image to load
 	//
 	// This cannot be used with SourceVolume.
 	SourceImage string `mapstructure:"source_image" required:"false"`
-	// zone is the zone in which to create the disk in.
+	// Zone is the zone in which to create the disk in.
 	//
 	// It is not exposed since the parent config already specifies it
 	// and it will be set for the block device when preparing it.
-	zone string
+	Zone string `mapstructure:"_"`
 }
 
 func volumeTypeError() string {
-	return fmt.Sprintf("valid volume types are: %s, %s, %s, %s and %s",
+	return fmt.Sprintf("valid volume types are: %s, %s, %s, %s, %s, %s, %s, %s or %s",
 		LocalScratch,
 		ZonalStandard,
 		ZonalBalanced,
 		ZonalSSD,
-		ZonalExtreme)
+		ZonalExtreme,
+		HyperDiskBalanced,
+		HyperDiskExtreme,
+		HyperDiskML,
+		HyperDiskThroughput)
 }
 
 func (bd *BlockDevice) Prepare() []error {
@@ -140,6 +160,10 @@ func (bd *BlockDevice) Prepare() []error {
 
 	if bd.DeviceName != "" && bd.VolumeType == LocalScratch {
 		errs = append(errs, fmt.Errorf("Scratch volumes may not have a device_name attached to them"))
+	}
+
+	if bd.CreateImage && bd.VolumeType == LocalScratch {
+		errs = append(errs, fmt.Errorf("Scratch volumes may not have create_image enabled"))
 	}
 
 	if bd.SourceVolume != "" {
@@ -181,7 +205,8 @@ func (bd *BlockDevice) prepareDiskCreate() []error {
 
 	switch bd.VolumeType {
 	case LocalScratch,
-		ZonalStandard, ZonalBalanced, ZonalSSD, ZonalExtreme:
+		ZonalStandard, ZonalBalanced, ZonalSSD, ZonalExtreme,
+		HyperDiskBalanced, HyperDiskExtreme, HyperDiskML, HyperDiskThroughput:
 	default:
 		errs = append(errs, fmt.Errorf("A valid volume type was not specified %q", bd.VolumeType))
 		errs = append(errs, fmt.Errorf("%s", volumeTypeError()))
@@ -234,7 +259,7 @@ func (bd *BlockDevice) prepareDiskCreate() []error {
 
 var regionRegexp = regexp.MustCompile("^(.+)-[^-]$")
 
-func getRegionFromZone(zone string) (string, error) {
+func GetRegionFromZone(zone string) (string, error) {
 	matches := regionRegexp.FindStringSubmatch(zone)
 	if len(matches) != 2 {
 		return "", fmt.Errorf("failed to extract region from zone %q", zone)
@@ -242,13 +267,13 @@ func getRegionFromZone(zone string) (string, error) {
 	return matches[1], nil
 }
 
-var zoneRegexp = regexp.MustCompile("^[a-z]+-[a-z]+[0-9]-[a-z]$")
+var zoneRegexp = regexp.MustCompile("^[a-z]+-[a-z]+[0-9]{1,2}-[a-z]$")
 
-func isZoneARegion(zone string) bool {
+func IsZoneARegion(zone string) bool {
 	return !zoneRegexp.MatchString(zone)
 }
 
-func (bd BlockDevice) generateComputeDiskPayload() (*compute.Disk, error) {
+func (bd BlockDevice) GenerateComputeDiskPayload() (*compute.Disk, error) {
 	// We don't create a new disk if it is referenced
 	if bd.SourceVolume != "" {
 		return nil, nil
@@ -270,15 +295,15 @@ func (bd BlockDevice) generateComputeDiskPayload() (*compute.Disk, error) {
 	}
 
 	if len(bd.ReplicaZones) == 0 {
-		payload.Type = fmt.Sprintf("zones/%s/diskTypes/%s", bd.zone, bd.VolumeType)
+		payload.Type = fmt.Sprintf("zones/%s/diskTypes/%s", bd.Zone, bd.VolumeType)
 	} else {
-		region, err := getRegionFromZone(bd.zone)
+		region, err := GetRegionFromZone(bd.Zone)
 		if err != nil {
 			return nil, err
 		}
 		payload.Type = fmt.Sprintf("regions/%s/diskTypes/%s", region, bd.VolumeType)
 		payload.ReplicaZones = []string{
-			fmt.Sprintf("zones/%s", bd.zone),
+			fmt.Sprintf("zones/%s", bd.Zone),
 		}
 	}
 
@@ -299,14 +324,14 @@ func (bd BlockDevice) shouldAutoDelete() bool {
 		return true
 	}
 
-	if bd.KeepDevice {
+	if bd.CreateImage || bd.KeepDevice {
 		return false
 	}
 
 	return true
 }
 
-func (bd BlockDevice) generateDiskAttachment() *compute.AttachedDisk {
+func (bd BlockDevice) GenerateDiskAttachment() *compute.AttachedDisk {
 	if bd.VolumeType == LocalScratch {
 		return &compute.AttachedDisk{
 			AutoDelete:        true,

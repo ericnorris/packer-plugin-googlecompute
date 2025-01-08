@@ -9,12 +9,14 @@ package googlecomputeexport
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/hcl/v2/hcldec"
 	"github.com/hashicorp/packer-plugin-googlecompute/builder/googlecompute"
-	"github.com/hashicorp/packer-plugin-sdk/common"
+	"github.com/hashicorp/packer-plugin-googlecompute/lib/common"
+	sdk_common "github.com/hashicorp/packer-plugin-sdk/common"
 	"github.com/hashicorp/packer-plugin-sdk/communicator"
 	"github.com/hashicorp/packer-plugin-sdk/multistep"
 	"github.com/hashicorp/packer-plugin-sdk/multistep/commonsteps"
@@ -25,15 +27,9 @@ import (
 )
 
 type Config struct {
-	common.PackerConfig `mapstructure:",squash"`
+	sdk_common.PackerConfig `mapstructure:",squash"`
+	common.Authentication   `mapstructure:",squash"`
 
-	//A temporary OAuth 2.0 access token
-	AccessToken string `mapstructure:"access_token" required:"false"`
-	//The JSON file containing your account credentials.
-	//If specified, the account file will take precedence over any `googlecompute` builder authentication method.
-	AccountFile string `mapstructure:"account_file" required:"false"`
-	// This allows service account impersonation as per the [docs](https://cloud.google.com/iam/docs/impersonating-service-accounts).
-	ImpersonateServiceAccount string `mapstructure:"impersonate_service_account" required:"false"`
 	// The service account scopes for launched exporter post-processor instance.
 	// Defaults to:
 	//
@@ -71,11 +67,9 @@ type Config struct {
 	//to `googlecompute` builder zone. Example: `"us-central1-a"`
 	Zone                string `mapstructure:"zone"`
 	IAP                 bool   `mapstructure-to-hcl2:",skip"`
-	VaultGCPOauthEngine string `mapstructure:"vault_gcp_oauth_engine"`
 	ServiceAccountEmail string `mapstructure:"service_account_email"`
 
-	account *googlecompute.ServiceAccount
-	ctx     interpolate.Context
+	ctx interpolate.Context
 }
 
 type PostProcessor struct {
@@ -119,14 +113,12 @@ func (p *PostProcessor) Configure(raws ...interface{}) error {
 		p.config.Network = "default"
 	}
 
-	if p.config.AccountFile != "" && p.config.VaultGCPOauthEngine != "" {
-		errs = packersdk.MultiErrorAppend(
-			errs, fmt.Errorf("May set either account_file or "+
-				"vault_gcp_oauth_engine, but not both."))
+	warns, err := p.config.Authentication.Prepare()
+	if err != nil {
+		errs = packersdk.MultiErrorAppend(errs, err)
 	}
-	if p.config.AccountFile != "" && p.config.AccessToken != "" {
-		errs = packersdk.MultiErrorAppend(errs, fmt.Errorf("You cannot "+
-			"specify access_token and account_file at the same time"))
+	for _, warn := range warns {
+		log.Printf("[WARN] - %s", warn)
 	}
 
 	if len(p.config.Scopes) == 0 {
@@ -155,7 +147,6 @@ func (p *PostProcessor) PostProcess(ctx context.Context, ui packersdk.Ui, artifa
 		return nil, false, false, err
 	}
 
-	builderAccountFile := artifact.State("AccountFilePath").(string)
 	builderImageName := artifact.State("ImageName").(string)
 	builderProjectId := artifact.State("ProjectId").(string)
 	builderZone := artifact.State("BuildZone").(string)
@@ -164,22 +155,6 @@ func (p *PostProcessor) PostProcess(ctx context.Context, ui packersdk.Ui, artifa
 
 	if p.config.Zone == "" {
 		p.config.Zone = builderZone
-	}
-
-	// Set up credentials for GCE driver.
-	if builderAccountFile != "" {
-		cfg, err := googlecompute.ProcessAccountFile(builderAccountFile)
-		if err != nil {
-			return nil, false, false, err
-		}
-		p.config.account = cfg
-	}
-	if p.config.AccountFile != "" {
-		cfg, err := googlecompute.ProcessAccountFile(p.config.AccountFile)
-		if err != nil {
-			return nil, false, false, err
-		}
-		p.config.account = cfg
 	}
 
 	// Set up exporter instance configuration.
@@ -218,17 +193,14 @@ func (p *PostProcessor) PostProcess(ctx context.Context, ui packersdk.Ui, artifa
 	if p.config.ServiceAccountEmail != "" {
 		exporterConfig.ServiceAccountEmail = p.config.ServiceAccountEmail
 	}
-	cfg := googlecompute.GCEDriverConfig{
-		Ui:                            ui,
-		ProjectId:                     builderProjectId,
-		Account:                       p.config.account,
-		AccessToken:                   p.config.AccessToken,
-		ImpersonateServiceAccountName: p.config.ImpersonateServiceAccount,
-		Scopes:                        p.config.Scopes,
-		VaultOauthEngineName:          p.config.VaultGCPOauthEngine,
+	cfg := &common.GCEDriverConfig{
+		Ui:        ui,
+		ProjectId: builderProjectId,
+		Scopes:    p.config.Scopes,
 	}
+	p.config.Authentication.ApplyDriverConfig(cfg)
 
-	driver, err := googlecompute.NewDriverGCE(cfg)
+	driver, err := common.NewDriverGCE(*cfg)
 	if err != nil {
 		ui.Error(fmt.Sprintf("Error creating GCE driver: %s", err.Error()))
 		return nil, false, false, err
